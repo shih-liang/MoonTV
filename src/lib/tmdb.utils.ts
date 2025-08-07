@@ -310,11 +310,22 @@ export function formatYear(dateString: string): string {
 
 // 错误处理工具
 export function handleTMDBError(error: Error): string {
-  if (error.status === 401) {
+  // 检查是否是网络错误或超时错误
+  if (error.name === 'AbortError') {
+    return '请求超时，请稍后重试';
+  }
+
+  // 从错误消息中解析状态码
+  const message = error.message;
+  if (message.includes('401')) {
     return 'TMDB API Key 无效';
-  } else if (error.status === 429) {
+  } else if (message.includes('429')) {
     return 'TMDB API 请求过于频繁，请稍后再试';
-  } else if (error.status >= 500) {
+  } else if (
+    message.includes('500') ||
+    message.includes('502') ||
+    message.includes('503')
+  ) {
     return 'TMDB 服务器错误';
   } else {
     return '获取 TMDB 数据失败';
