@@ -1,88 +1,19 @@
 import { NextResponse } from 'next/server';
 
-interface TMDBMovie {
-  id: number;
-  title: string;
-  poster_path: string;
-  vote_average: number;
-  release_date: string;
-  overview: string;
-}
-
-interface TMDBSeries {
-  id: number;
-  name: string;
-  poster_path: string;
-  vote_average: number;
-  first_air_date: string;
-  overview: string;
-}
-
-interface TMDBResponse<T> {
-  page: number;
-  results: T[];
-  total_pages: number;
-  total_results: number;
-}
-
-interface DoubanItem {
-  id: string;
-  title: string;
-  poster: string;
-  rate: string;
-  year: string;
-}
-
-interface DoubanResult {
-  code: number;
-  message: string;
-  list: DoubanItem[];
-}
-
-/**
- * 获取 TMDB 图片 URL
- */
-function getTMDBImageUrl(posterPath: string, size = 'w500'): string {
-  if (!posterPath) return '';
-  return `https://image.tmdb.org/t/p/${size}${posterPath}`;
-}
-
-/**
- * 从日期字符串中提取年份
- */
-function extractYear(dateString: string): string {
-  if (!dateString) return '';
-  const match = dateString.match(/(\d{4})/);
-  return match ? match[1] : '';
-}
-
-/**
- * 将 TMDB 电影数据转换为 DoubanItem 格式
- */
-function convertTMDBMovieToDoubanItem(movie: TMDBMovie): DoubanItem {
-  return {
-    id: movie.id.toString(),
-    title: movie.title,
-    poster: getTMDBImageUrl(movie.poster_path),
-    rate: movie.vote_average ? movie.vote_average.toFixed(1) : '',
-    year: extractYear(movie.release_date),
-  };
-}
-
-/**
- * 将 TMDB 剧集数据转换为 DoubanItem 格式
- */
-function convertTMDBSeriesToDoubanItem(series: TMDBSeries): DoubanItem {
-  return {
-    id: series.id.toString(),
-    title: series.name,
-    poster: getTMDBImageUrl(series.poster_path),
-    rate: series.vote_average ? series.vote_average.toFixed(1) : '',
-    year: extractYear(series.first_air_date),
-  };
-}
+import {
+  buildTMDBUrl,
+  convertTMDBMovieToDoubanItem,
+  convertTMDBSeriesToDoubanItem,
+  TMDBMovie,
+  TMDBResponse,
+  TMDBSeries,
+} from '@/lib/tmdb.utils';
+import { DoubanItem, DoubanResult } from '@/lib/types';
 
 export const runtime = 'edge';
+
+// 缓存配置
+const CACHE_DURATION = 3600; // 1 小时缓存
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -111,7 +42,7 @@ export async function GET(request: Request) {
 
   if (pageLimit < 1 || pageLimit > 100) {
     return NextResponse.json(
-      { error: 'pageSize 必须在 1-100 之间' },
+      { error: 'pageLimit 必须在 1-100 之间' },
       { status: 400 }
     );
   }
@@ -135,79 +66,250 @@ export async function GET(request: Request) {
 
     // 构建TMDB API URL
     let endpoint = '';
+    let params: Record<string, string | number | boolean> = {};
     const page = Math.floor(pageStart / pageLimit) + 1;
 
+    // 基础参数
+    params.page = page;
+    params.include_adult = false;
+    params.include_video = false;
+
     if (kind === 'movie') {
+      // 电影分类处理
+      let baseEndpoint = '';
+      const baseParams: Record<string, string | number | boolean> = {};
+
+      // 根据主分类确定基础端点
       switch (category) {
         case '热门':
-          endpoint = '/movie/popular';
+          baseEndpoint = '/movie/popular';
           break;
         case '最新':
-          endpoint = '/movie/now_playing';
+          baseEndpoint = '/movie/now_playing';
           break;
         case '即将上映':
-          endpoint = '/movie/upcoming';
+          baseEndpoint = '/movie/upcoming';
           break;
         case '高分':
-          endpoint = '/movie/top_rated';
+        case '豆瓣高分':
+          baseEndpoint = '/movie/top_rated';
+          break;
+        case '冷门佳片':
+          baseEndpoint = '/discover/movie';
+          baseParams.sort_by = 'vote_average.desc';
+          baseParams['vote_count.gte'] = '100';
           break;
         default:
-          endpoint = '/movie/popular';
+          baseEndpoint = '/movie/popular';
       }
+
+      // 根据地区分类添加额外参数
+      switch (type) {
+        case '华语':
+          if (baseEndpoint === '/discover/movie') {
+            baseParams.with_origin_country = 'CN';
+          } else {
+            baseEndpoint = '/discover/movie';
+            baseParams.with_origin_country = 'CN';
+            baseParams.sort_by = 'popularity.desc';
+          }
+          break;
+        case '欧美':
+          if (baseEndpoint === '/discover/movie') {
+            baseParams.with_origin_country = 'US';
+          } else {
+            baseEndpoint = '/discover/movie';
+            baseParams.with_origin_country = 'US';
+            baseParams.sort_by = 'popularity.desc';
+          }
+          break;
+        case '韩国':
+          if (baseEndpoint === '/discover/movie') {
+            baseParams.with_origin_country = 'KR';
+          } else {
+            baseEndpoint = '/discover/movie';
+            baseParams.with_origin_country = 'KR';
+            baseParams.sort_by = 'popularity.desc';
+          }
+          break;
+        case '日本':
+          if (baseEndpoint === '/discover/movie') {
+            baseParams.with_origin_country = 'JP';
+          } else {
+            baseEndpoint = '/discover/movie';
+            baseParams.with_origin_country = 'JP';
+            baseParams.sort_by = 'popularity.desc';
+          }
+          break;
+        case '动漫':
+          baseEndpoint = '/discover/movie';
+          baseParams.with_genres = '16'; // 动画 genre ID
+          baseParams.sort_by = 'popularity.desc';
+          break;
+        case '纪录片':
+          baseEndpoint = '/discover/movie';
+          baseParams.with_genres = '99'; // 纪录片 genre ID
+          baseParams.sort_by = 'popularity.desc';
+          break;
+      }
+
+      endpoint = baseEndpoint;
+      // 合并参数
+      params = { ...params, ...baseParams };
     } else {
-      switch (category) {
-        case '热门':
-          endpoint = '/tv/popular';
-          break;
-        case '最新':
-          endpoint = '/tv/on_the_air';
-          break;
-        case '即将上映':
-          endpoint = '/tv/airing_today';
-          break;
-        case '高分':
-          endpoint = '/tv/top_rated';
-          break;
-        default:
-          endpoint = '/tv/popular';
-      }
-    }
+      // 电视剧分类处理
+      let baseEndpoint = '';
+      const baseParams: Record<string, string | number | boolean> = {};
 
-    const target = `https://api.themoviedb.org/3${endpoint}?api_key=${apiKey}&language=zh-CN&page=${page}`;
-
-    const response = await fetch(target, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`TMDB API error: ${response.status}`);
-    }
-
-    const tmdbData: TMDBResponse<TMDBMovie | TMDBSeries> =
-      await response.json();
-
-    // 转换数据格式
-    const list: DoubanItem[] = tmdbData.results.map((item) => {
-      if (kind === 'movie') {
-        return convertTMDBMovieToDoubanItem(item as TMDBMovie);
+      // 根据 category 确定基础端点
+      if (category === 'tv') {
+        // 电视剧页面：根据 type 参数确定具体分类
+        switch (type) {
+          case 'tv':
+            baseEndpoint = '/tv/popular';
+            break;
+          case 'tv_domestic':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_origin_country = 'CN';
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          case 'tv_american':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_origin_country = 'US';
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          case 'tv_japanese':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_origin_country = 'JP';
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          case 'tv_korean':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_origin_country = 'KR';
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          case 'tv_animation':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_genres = '16'; // 动画 genre ID
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          case 'tv_documentary':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_genres = '99'; // 纪录片 genre ID
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          default:
+            baseEndpoint = '/tv/popular';
+        }
+      } else if (category === 'show') {
+        // 综艺页面：根据 type 参数确定具体分类
+        switch (type) {
+          case 'show':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_genres = '10764'; // 综艺 genre ID
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          case 'show_domestic':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_genres = '10764'; // 综艺 genre ID
+            baseParams.with_origin_country = 'CN'; // 国内
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          case 'show_foreign':
+            baseEndpoint = '/discover/tv';
+            baseParams.with_genres = '10764'; // 综艺 genre ID
+            baseParams.with_origin_country = 'US'; // 国外（主要欧美）
+            baseParams.sort_by = 'popularity.desc';
+            break;
+          default:
+            baseEndpoint = '/discover/tv';
+            baseParams.with_genres = '10764'; // 综艺 genre ID
+            baseParams.sort_by = 'popularity.desc';
+        }
       } else {
-        return convertTMDBSeriesToDoubanItem(item as TMDBSeries);
+        // 默认返回热门电视剧
+        baseEndpoint = '/tv/popular';
       }
-    });
 
-    const result: DoubanResult = {
-      code: 200,
-      message: '获取成功',
-      list: list,
-    };
+      endpoint = baseEndpoint;
+      // 合并参数
+      params = { ...params, ...baseParams };
+    }
 
-    return NextResponse.json(result);
+    const target = buildTMDBUrl(endpoint, apiKey, params);
+
+    // 添加请求超时
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 秒超时
+
+    try {
+      const response = await fetch(target, {
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'MoonTV/1.0',
+        },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`TMDB API error: ${response.status}`);
+      }
+
+      const tmdbData: TMDBResponse<TMDBMovie | TMDBSeries> =
+        await response.json();
+
+      // 转换数据格式
+      const list: DoubanItem[] = tmdbData.results.map(
+        (item: TMDBMovie | TMDBSeries) => {
+          if (kind === 'movie') {
+            return convertTMDBMovieToDoubanItem(item as TMDBMovie);
+          } else {
+            return convertTMDBSeriesToDoubanItem(item as TMDBSeries);
+          }
+        }
+      );
+
+      const result: DoubanResult = {
+        code: 200,
+        message: '获取成功',
+        list: list,
+      };
+
+      // 设置缓存头
+      const responseHeaders = new Headers();
+      responseHeaders.set('Cache-Control', `public, max-age=${CACHE_DURATION}`);
+      responseHeaders.set('ETag', `"${Date.now()}"`);
+
+      return NextResponse.json(result, {
+        headers: responseHeaders,
+      });
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      throw fetchError;
+    }
   } catch (error) {
-    return NextResponse.json(
-      { error: '获取 TMDB 分类数据失败' },
-      { status: 500 }
-    );
+    // 根据错误类型返回不同的错误信息
+    let errorMessage = '获取 TMDB 分类数据失败';
+    let statusCode = 500;
+
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        errorMessage = '请求超时，请稍后重试';
+        statusCode = 408;
+      } else if (error.message.includes('401')) {
+        errorMessage = 'TMDB API Key 无效';
+        statusCode = 500;
+      } else if (error.message.includes('429')) {
+        errorMessage = 'TMDB API 请求过于频繁，请稍后再试';
+        statusCode = 429;
+      } else if (error.message.includes('500')) {
+        errorMessage = 'TMDB 服务器错误';
+        statusCode = 502;
+      }
+    }
+
+    return NextResponse.json({ error: errorMessage }, { status: statusCode });
   }
 }
