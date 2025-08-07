@@ -33,7 +33,7 @@ async function fetchWithTimeout(
   options: RequestInit = {}
 ): Promise<Response> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 秒超时
 
   // 检查是否使用代理
   const proxyUrl = getDoubanProxyUrl();
@@ -127,7 +127,7 @@ export async function fetchDoubanCategories(
         })
       );
     }
-    throw new Error(`获取豆瓣分类数据失败: ${(error as Error).message}`);
+    throw new Error(`获取豆瓣分类数据失败：${(error as Error).message}`);
   }
 }
 
@@ -144,7 +144,7 @@ export async function getDoubanCategories(
     // 使用服务端 API（当没有设置代理 URL 时）
     const { kind, category, type, pageLimit = 20, pageStart = 0 } = params;
     const response = await fetch(
-      `/api/douban/categories?kind=${kind}&category=${category}&type=${type}&limit=${pageLimit}&start=${pageStart}`
+      `/api/tmdb/categories?kind=${kind}&category=${category}&type=${type}&limit=${pageLimit}&start=${pageStart}`
     );
 
     if (!response.ok) {
@@ -179,7 +179,7 @@ export async function getDoubanList(
     return fetchDoubanList(params);
   } else {
     const response = await fetch(
-      `/api/douban?tag=${tag}&type=${type}&pageSize=${pageLimit}&pageStart=${pageStart}`
+      `/api/tmdb?tag=${tag}&type=${type}&pageSize=${pageLimit}&pageStart=${pageStart}`
     );
 
     if (!response.ok) {
@@ -254,6 +254,6 @@ export async function fetchDoubanList(
         })
       );
     }
-    throw new Error(`获取豆瓣分类数据失败: ${(error as Error).message}`);
+    throw new Error(`获取豆瓣分类数据失败：${(error as Error).message}`);
   }
 }
